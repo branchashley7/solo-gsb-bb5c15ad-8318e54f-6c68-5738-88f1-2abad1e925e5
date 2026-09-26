@@ -20,7 +20,9 @@
       「备份与恢复」可下载仅含成员 ID、姓名、纪念日与关系的 JSON 备份，选择备份文件预览校验后整体恢复（可撤销）；
       「成员纪念日」可为每名成员登记一个生日与一个忌日（公历月日），并查看包含今天在内的未来 30 天纪念日清单；
       「后代支系视图」可选择始祖与 1～10 代上限提取后代：同一后代只显示一次、按最短代数分组并标记所属分支，
-      仅展示支系内亲子关系，结果可下载为局部导出的 JSON。
+      仅展示支系内亲子关系，结果可下载为局部导出的 JSON；
+      「整谱关系图」把当前全部成员与父母 → 子女关系绘成可缩放的 SVG（按忽略方向的连通分量与最长父母链分层、
+      父母重心排序），图上标注家谱版本，支持下载 SVG，家谱写入后提示重新生成。
     </p>
   </header>
 
@@ -276,6 +278,30 @@
       </p>
       <div id="branch-result" class="result" aria-live="polite">
         <p class="placeholder">选择始祖与代数上限后点击「生成支系视图」。</p>
+      </div>
+    </section>
+
+    <!-- 整谱关系图 -->
+    <section class="card wide" aria-labelledby="graph-title">
+      <h2 id="graph-title">⑨ 整谱关系图</h2>
+      <div class="graph-toolbar">
+        <button type="button" id="graph-generate" class="primary">生成整谱关系图</button>
+        <button type="button" id="graph-download" disabled>下载 SVG</button>
+        <span class="graph-zoom-controls">
+          <button type="button" id="graph-zoom-out" disabled aria-label="缩小">－</button>
+          <button type="button" id="graph-zoom-reset" disabled>重置</button>
+          <button type="button" id="graph-zoom-in" disabled aria-label="放大">＋</button>
+        </span>
+        <span class="graph-hint">滚轮缩放，按住鼠标拖动平移</span>
+      </div>
+      <p class="empty-hint">
+        先按<strong>忽略方向</strong>的关系划分连通分量，各分量分别按<strong>最长父母链</strong>分层；
+        多位父母指向同一子女时只绘一个成员节点、保留各条连线。层内按直接父母节点横坐标的<strong>重心</strong>排序
+        （平局按姓名、ID），没有父母的层按姓名、ID 排序；分量之间留白，节点与姓名不重叠。
+        图上标注生成时的家谱版本，家谱发生写入后需重新生成；本模块只读，不修改任何数据。空谱显示空状态。
+      </p>
+      <div id="graph-result" class="result graph-result" aria-live="polite">
+        <p class="placeholder">点击「生成整谱关系图」：把当前全部成员与父母 → 子女关系绘成可缩放的 SVG。</p>
       </div>
     </section>
   </main>

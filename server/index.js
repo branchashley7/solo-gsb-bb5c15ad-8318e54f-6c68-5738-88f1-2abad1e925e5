@@ -13,6 +13,7 @@ const {
   MAX_DESCENDANT_GENERATIONS,
 } = require('./familyGraph');
 const { parseLocalDate, upcomingAnniversaries } = require('./anniversaries');
+const { layoutFamilyGraph } = require('./familyLayout');
 
 const PORT = parseInt(process.env.PORT, 10) || 3000;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -596,6 +597,60 @@ app.get('/api/descendant-branches', (req, res) => {
       parentName: nameOf(e.parentId),
       childId: e.childId,
       childName: nameOf(e.childId),
+    })),
+  });
+});
+
+/**
+ * 整谱关系图（只读，不写入任何数据）：
+ * 把当前全部成员与父母→子女关系按固定规则布局：
+ *   - 先按忽略方向的关系划分连通分量（无关系成员各自成一个单成员分量）；
+ *   - 各分量按最长父母链分层（无父母为第 0 层），多名父母指向同一子女时
+ *     子女只占一个节点，每条亲子边分别保留；
+ *   - 无父母的层按姓名、ID 排序，其余各层按直接父母横坐标重心排序、
+ *     平局按姓名、ID；分量按分量内（姓名、ID）最小成员稳定排序；
+ *   - 同层节点、相邻层、相邻分量均保留留白，节点宽度随姓名自适应，不重叠。
+ * 返回每个成员的绝对坐标（x/y/width/height）、所属分量、层与全部边，
+ * 以及画布 width/height 与布局参数，页面据此直接渲染可缩放 SVG。
+ * 响应携带当前家谱版本 version：页面据此标注「基于版本 N」，
+ * 家谱发生写入后提示重新生成（下载按钮同时禁用，避免导出旧图）。
+ */
+app.get('/api/family-graph', (req, res) => {
+  const layout = layoutFamilyGraph(store.getState());
+  const byId = new Map(store.list().members.map((m) => [m.id, m.name]));
+  const nameOf = (id) => byId.get(id) || '（已删除）';
+
+  res.json({
+    version: store.getVersion(),
+    empty: layout.empty,
+    memberCount: layout.memberCount,
+    edgeCount: layout.edgeCount,
+    componentCount: layout.componentCount,
+    width: layout.width,
+    height: layout.height,
+    metrics: layout.metrics,
+    components: layout.components.map((c) => ({
+      index: c.index,
+      x: c.x,
+      y: c.y,
+      width: c.width,
+      height: c.height,
+      maxLayer: c.maxLayer,
+      nodes: c.nodes.map((n) => ({
+        id: n.id,
+        name: nameOf(n.id),
+        layer: n.layer,
+        x: n.x,
+        y: n.y,
+        width: n.width,
+        height: n.height,
+      })),
+      edges: c.edges.map((e) => ({
+        parentId: e.parentId,
+        parentName: nameOf(e.parentId),
+        childId: e.childId,
+        childName: nameOf(e.childId),
+      })),
     })),
   });
 });

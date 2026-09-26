@@ -68,6 +68,14 @@ let branchResult = null;
 let branchStale = false;
 let branchStaleReason = '';
 
+// 最近一次整谱关系图布局（服务端返回，含 version）
+// 结果保持展示；家谱发生写入（版本变化）后标记为过期、禁用下载并提示重新生成；
+// null 表示尚未生成或当前为空谱（空谱展示空状态，不标记过期）
+let graphLayout = null;
+let graphStale = false;
+let graphStaleReason = '';
+let graphMode = 'placeholder'; // 'placeholder' | 'empty' | 'svg'
+
 const $ = (id) => document.getElementById(id);
 
 /** 安全创建 DOM 元素，避免 innerHTML 注入 */
@@ -137,6 +145,9 @@ async function refresh() {
   if (versionChanged && branchResult && !branchStale) {
     invalidateBranchResult('家谱已发生写入，以下支系视图基于旧版本，请重新生成');
   }
+  if (versionChanged && (graphLayout || graphMode !== 'placeholder') && !graphStale) {
+    invalidateGraph('家谱已发生写入，以下整谱关系图基于旧版本，请重新生成');
+  }
   render();
   loadUpcoming();
 }
@@ -160,6 +171,9 @@ function applyStateAndRender(data) {
   }
   if (versionChanged && branchResult && !branchStale) {
     invalidateBranchResult('家谱已发生写入，以下支系视图基于旧版本，请重新生成');
+  }
+  if (versionChanged && (graphLayout || graphMode !== 'placeholder') && !graphStale) {
+    invalidateGraph('家谱已发生写入，以下整谱关系图基于旧版本，请重新生成');
   }
   render();
   loadUpcoming();
@@ -216,6 +230,7 @@ function render() {
   renderRestore();
   renderAnniversaries();
   renderUpcoming();
+  renderFamilyGraphCard();
 }
 
 /* ---------------- 最近操作与撤销 ---------------- */
@@ -449,8 +464,15 @@ function renderStaleBanner() {
     branchStale,
     `⚠️ ${branchStaleReason || '家谱在上次生成后发生过写入，以下结果可能已过期，请重新生成。'}`,
   );
-  // 结果过期或尚未生成时禁止下载，避免导出与展示不一致的旧数据
+  // 整谱关系图的过期横幅挂在结果区内（空状态/占位时不展示）
+  renderOneStaleBanner(
+    $('graph-result'),
+    graphStale,
+    `⚠️ ${graphStaleReason || '家谱在上次生成后发生过写入，以下关系图可能已过期，请重新生成。'}`,
+  );
+  // 结果过期或尚未生成时禁止下载，避免导出与当前家谱不一致的旧图
   $('branch-export').disabled = !(branchResult && !branchStale);
+  $('graph-download').disabled = !(graphLayout && !graphStale);
 }
 
 function renderOneStaleBanner(box, stale, message) {
@@ -2006,6 +2028,354 @@ async function clearAnniversaries(member) {
     toast(err.message, true);
   }
 }
+
+/* ---------------- 整谱关系图 ---------------- */
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const GRAPH_ZOOM_MIN = 0.15;
+const GRAPH_ZOOM_MAX = 4;
+
+/** 创建 SVG 命名空间元素 */
+function svgEl(tag, attrs = {}, children = []) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === 'text') node.textContent = value;
+    else if (value !== null && value !== undefined) node.setAttribute(key, value);
+  }
+  for (const child of [].concat(children)) {
+    if (child === null || child === undefined) continue;
+    node.appendChild(child);
+  }
+  return node;
+}
+
+function invalidateGraph(reason) {
+  graphStale = true;
+  graphStaleReason = reason;
+  // 占位模式（尚未生成）没有 hasResult 标记，横幅不会出现；空谱/关系图模式会提示重新生成
+  renderStaleBanner();
+}
+
+function showGraphPlaceholder() {
+  graphMode = 'placeholder';
+  const box = $('graph-result');
+  box.classList.remove('graph-empty');
+  delete box.dataset.hasResult;
+  box.replaceChildren(el('p', {
+    class: 'placeholder',
+    text: '点击「生成整谱关系图」：把当前全部成员与父母 → 子女关系绘成可缩放的 SVG。',
+  }));
+}
+
+function showGraphEmpty(version) {
+  graphMode = 'empty';
+  const box = $('graph-result');
+  box.classList.add('graph-empty');
+  box.dataset.hasResult = '1';
+  box.replaceChildren(
+    el('p', { class: 'graph-empty-title', text: '当前为空谱' }),
+    el('p', {
+      class: 'empty-hint',
+      text: `家谱中还没有任何成员（家谱版本 ${version}）。请先在「① 成员」中录入成员并建立父母 → 子女关系，再重新生成整谱关系图。`,
+    }),
+  );
+}
+
+/** 生成整谱关系图：只读查询，服务端按当前最新家谱状态布局 */
+async function generateFamilyGraph() {
+  const btn = $('graph-generate');
+  btn.disabled = true;
+  try {
+    const data = await api('/api/family-graph');
+    graphLayout = data.empty ? null : data;
+    graphStale = false;
+    graphStaleReason = '';
+    if (data.empty) {
+      showGraphEmpty(data.version);
+    } else {
+      renderFamilyGraph(data);
+    }
+    renderStaleBanner();
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$('graph-generate').addEventListener('click', generateFamilyGraph);
+
+/** 下载用独立 SVG 不依赖页面样式表，内嵌一份同名样式保证打开即与页面一致 */
+const GRAPH_SVG_STYLE = `
+  .graph-title-text { font-size: 16px; font-weight: 700; fill: #1f2933; }
+  .graph-subtitle-text { font-size: 12px; fill: #6b7280; }
+  .graph-component-box { fill: none; stroke: #cbd5e1; stroke-width: 1; stroke-dasharray: 5 4; }
+  .graph-edge { fill: none; stroke: #64748b; stroke-width: 1.5; }
+  .graph-node rect { fill: #eff6ff; stroke: #2563eb; stroke-width: 1.5; }
+  .graph-node-text { font-size: 14px; fill: #1e3a8a; font-weight: 600; }
+`;
+
+/**
+ * 渲染整谱关系图 SVG（standalone=false：页面内嵌，启用缩放/平移；
+ * standalone=true：下载用独立文档，viewBox 为完整布局、不可交互）。
+ */
+function buildFamilyGraphSvg(data, { standalone }) {
+  const { width, height, metrics } = data;
+
+  const svg = svgEl('svg', {
+    class: standalone ? 'family-graph standalone' : 'family-graph',
+    width: standalone ? width : '100%',
+    height: standalone ? height : '100%',
+    viewBox: `0 0 ${width} ${height}`,
+    xmlns: SVG_NS,
+    role: 'img',
+    'aria-label': `整谱关系图：${data.memberCount} 名成员、${data.edgeCount} 条父母→子女关系、${data.componentCount} 个连通分量`,
+    style: standalone
+      ? 'font-family:"PingFang SC","Microsoft YaHei","Noto Sans CJK SC",system-ui,sans-serif;'
+      : null,
+  });
+
+  if (standalone) {
+    svg.appendChild(svgEl('style', { text: GRAPH_SVG_STYLE }));
+  }
+
+  // 箭头标记（节点边框处裁断连线后，箭头尖端正好落在节点边缘）
+  const defs = svgEl('defs');
+  const marker = svgEl('marker', {
+    id: standalone ? 'graph-arrow-standalone' : 'graph-arrow',
+    viewBox: '0 0 10 10',
+    refX: 9,
+    refY: 5,
+    markerWidth: 8,
+    markerHeight: 8,
+    orient: 'auto-start-reverse',
+    markerUnits: 'userSpaceOnUse',
+  });
+  marker.appendChild(svgEl('path', { d: 'M 0 0 L 10 5 L 0 10 z', fill: '#64748b' }));
+  defs.appendChild(marker);
+  svg.appendChild(defs);
+
+  // 图名与家谱版本标注（图内固定区域，缩放时随之缩放；下载文件同样保留）
+  const generatedAt = new Date();
+  let atText = '';
+  try {
+    atText = generatedAt.toLocaleString('zh-CN', { hour12: false });
+  } catch (_) {
+    atText = generatedAt.toISOString();
+  }
+  svg.appendChild(svgEl('text', {
+    x: metrics.paddingX,
+    y: 18,
+    class: 'graph-title-text',
+    text: `整谱关系图（家谱版本 ${data.version}，生成于 ${atText}）`,
+  }));
+  svg.appendChild(svgEl('text', {
+    x: metrics.paddingX,
+    y: 40,
+    class: 'graph-subtitle-text',
+    text: `${data.memberCount} 名成员 · ${data.edgeCount} 条父母→子女关系 · ${data.componentCount} 个连通分量（忽略方向）`,
+  }));
+
+  // 自下而上：分量框 → 边 → 节点（边压在虚线框上、节点压住边端）
+  const boxLayer = svgEl('g', { class: 'graph-component-boxes' });
+  const edgeLayer = svgEl('g', { class: 'graph-edges' });
+  const nodeLayer = svgEl('g', { class: 'graph-nodes' });
+
+  for (const comp of data.components) {
+    // 分量边界（虚线框）：分量之间留白的视觉提示
+    boxLayer.appendChild(svgEl('rect', {
+      x: comp.x - 10,
+      y: comp.y - 10,
+      width: comp.width + 20,
+      height: comp.height + 20,
+      rx: 10,
+      class: 'graph-component-box',
+    }));
+
+    // 边：每位父母指向同一子女的连线分别绘制（贝塞尔曲线，箭头指向节点边框）
+    for (const e of comp.edges) {
+      const p = nodeById(data, e.parentId);
+      const c = nodeById(data, e.childId);
+      const px = p.x + p.width / 2;
+      const py = p.y + p.height;
+      const cx = c.x + c.width / 2;
+      const cy = c.y;
+      const dy = Math.max(cy - py, metrics.nodeHeight + 12);
+      const d = `M ${px} ${py} C ${px} ${py + dy * 0.55}, ${cx} ${cy - dy * 0.55}, ${cx} ${cy - 1}`;
+      edgeLayer.appendChild(svgEl('path', {
+        d,
+        class: 'graph-edge',
+        'marker-end': standalone ? 'url(#graph-arrow-standalone)' : 'url(#graph-arrow)',
+      }));
+    }
+
+    // 成员节点：宽度按姓名自适应，节点与姓名都不会重叠
+    for (const n of comp.nodes) {
+      const g = svgEl('g', { class: 'graph-node' });
+      g.appendChild(svgEl('rect', {
+        x: n.x,
+        y: n.y,
+        width: n.width,
+        height: n.height,
+        rx: 8,
+        ry: 8,
+      }));
+      g.appendChild(svgEl('text', {
+        x: n.x + n.width / 2,
+        y: n.y + n.height / 2 + 0.5,
+        class: 'graph-node-text',
+        'dominant-baseline': 'central',
+        'text-anchor': 'middle',
+        text: n.name,
+      }));
+      nodeLayer.appendChild(g);
+    }
+  }
+
+  svg.appendChild(boxLayer);
+  svg.appendChild(edgeLayer);
+  svg.appendChild(nodeLayer);
+  return svg;
+}
+
+function nodeById(data, id) {
+  for (const comp of data.components) {
+    const hit = comp.nodes.find((n) => n.id === id);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/** 渲染整谱关系图到结果区，并绑定滚轮缩放与拖拽平移 */
+function renderFamilyGraph(data) {
+  graphMode = 'svg';
+  const box = $('graph-result');
+  box.classList.remove('graph-empty');
+  box.dataset.hasResult = '1';
+  box.replaceChildren();
+
+  const viewport = el('div', { class: 'graph-viewport' });
+  const svg = buildFamilyGraphSvg(data, { standalone: false });
+  viewport.appendChild(svg);
+  box.appendChild(viewport);
+
+  // 初始视图：水平方向适应视口宽度（最大 100%），可滚动查看全高
+  const zoomBtns = [$('graph-zoom-in'), $('graph-zoom-out'), $('graph-zoom-reset')];
+  zoomBtns.forEach((b) => { b.disabled = false; });
+
+  const state = { scale: 1, tx: 0, ty: 0 };
+  const applyView = () => {
+    svg.setAttribute('viewBox',
+      `${-state.tx} ${-state.ty} ${data.width / state.scale} ${data.height / state.scale}`);
+    $('graph-zoom-out').disabled = state.scale <= GRAPH_ZOOM_MIN + 1e-9;
+    $('graph-zoom-in').disabled = state.scale >= GRAPH_ZOOM_MAX - 1e-9;
+  };
+
+  const initialScale = Math.min(1, Math.max(GRAPH_ZOOM_MIN,
+    (viewport.clientWidth || data.width) / (data.width + 8)));
+  state.scale = initialScale;
+  // 初始视图水平居中：viewBox 左缘为负的两侧留白差（fit-to-width 时）
+  state.tx = Math.min(0, (viewport.clientWidth / initialScale - data.width) / 2);
+  applyView();
+
+  // 以光标所在 SVG 坐标为锚点缩放
+  const zoomAt = (factor, clientX, clientY) => {
+    const rect = svg.getBoundingClientRect();
+    const nextScale = Math.min(GRAPH_ZOOM_MAX, Math.max(GRAPH_ZOOM_MIN, state.scale * factor));
+    if (nextScale === state.scale) return;
+    const anchorSvgX =
+      ((clientX - rect.left) / rect.width) * (data.width / state.scale) - state.tx;
+    const anchorSvgY =
+      ((clientY - rect.top) / rect.height) * (data.height / state.scale) - state.ty;
+    state.scale = nextScale;
+    // 保持光标下的 SVG 点不动：tx = (clientX 比例)*内容宽/scale - anchor
+    state.tx = ((clientX - rect.left) / rect.width) * (data.width / state.scale) - anchorSvgX;
+    state.ty = ((clientY - rect.top) / rect.height) * (data.height / state.scale) - anchorSvgY;
+    applyView();
+  };
+
+  svg.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    zoomAt(ev.deltaY < 0 ? 1.15 : 1 / 1.15, ev.clientX, ev.clientY);
+  }, { passive: false });
+
+  // 拖拽平移
+  let dragging = false;
+  let lastX = 0;
+  let lastY = 0;
+  svg.addEventListener('pointerdown', (ev) => {
+    dragging = true;
+    lastX = ev.clientX;
+    lastY = ev.clientY;
+    svg.setPointerCapture(ev.pointerId);
+    svg.classList.add('grabbing');
+  });
+  svg.addEventListener('pointermove', (ev) => {
+    if (!dragging) return;
+    const rect = svg.getBoundingClientRect();
+    state.tx -= ((ev.clientX - lastX) / rect.width) * (data.width / state.scale);
+    state.ty -= ((ev.clientY - lastY) / rect.height) * (data.height / state.scale);
+    lastX = ev.clientX;
+    lastY = ev.clientY;
+    applyView();
+  });
+  const endDrag = (ev) => {
+    dragging = false;
+    svg.classList.remove('grabbing');
+    try { svg.releasePointerCapture(ev.pointerId); } catch (_) { /* 可能未捕获 */ }
+  };
+  svg.addEventListener('pointerup', endDrag);
+  svg.addEventListener('pointercancel', endDrag);
+
+  $('graph-zoom-in').onclick = () => {
+    const r = svg.getBoundingClientRect();
+    zoomAt(1.2, r.left + r.width / 2, r.top + r.height / 2);
+  };
+  $('graph-zoom-out').onclick = () => {
+    const r = svg.getBoundingClientRect();
+    zoomAt(1 / 1.2, r.left + r.width / 2, r.top + r.height / 2);
+  };
+  $('graph-zoom-reset').onclick = () => {
+    state.scale = initialScale;
+    state.tx = Math.min(0, (viewport.clientWidth / initialScale - data.width) / 2);
+    state.ty = 0;
+    applyView();
+  };
+}
+
+function renderFamilyGraphCard() {
+  // 只有正展示关系图时缩放按钮可用；占位 / 空谱状态全部禁用
+  if (graphMode !== 'svg') {
+    for (const id of ['graph-zoom-in', 'graph-zoom-out', 'graph-zoom-reset']) {
+      $(id).disabled = true;
+    }
+  }
+}
+
+/** 下载当前关系图为独立 SVG 文件（含家谱版本标注）；过期时禁止 */
+$('graph-download').addEventListener('click', () => {
+  if (!graphLayout || graphStale) {
+    toast('请先生成最新的整谱关系图', true);
+    return;
+  }
+  const data = graphLayout;
+  const standalone = buildFamilyGraphSvg(data, { standalone: true });
+  standalone.setAttribute('xmlns', SVG_NS);
+  const source = '<?xml version="1.0" encoding="UTF-8"?>\n' +
+    new XMLSerializer().serializeToString(standalone);
+  const blob = new Blob([source], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const date = new Date().toISOString().slice(0, 10);
+  const a = el('a', {
+    href: url,
+    download: `family-graph-v${data.version}-${date}.svg`,
+  });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  toast(`已下载整谱关系图 SVG（${data.memberCount} 名成员、${data.edgeCount} 条关系、版本 ${data.version}）`);
+});
 
 /* ---------------- 启动 ---------------- */
 

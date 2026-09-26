@@ -679,3 +679,107 @@ button.link-action:hover { text-decoration: underline; background: none; }
 }
 
 .branch-edges .edge-list { max-height: 240px; }
+
+/* 整谱关系图 */
+.graph-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.graph-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.graph-zoom-controls button {
+  min-width: 38px;
+  padding: 8px 10px;
+}
+
+.graph-zoom-controls button:disabled,
+#graph-download:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.graph-hint {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.graph-result.graph-empty {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 28px 18px;
+  text-align: center;
+  background: #fafbfc;
+}
+
+.graph-empty-title {
+  font-size: 1.05rem;
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+
+.graph-viewport {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background:
+    linear-gradient(45deg, #f8fafc 25%, transparent 25%, transparent 75%, #f8fafc 75%) 0 0 / 22px 22px,
+    linear-gradient(45deg, #f8fafc 25%, transparent 25%, transparent 75%, #f8fafc 75%) 11px 11px / 22px 22px,
+    #fff;
+  height: min(68vh, 640px);
+  overflow: hidden;
+}
+
+.family-graph {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.family-graph.grabbing { cursor: grabbing; }
+
+.graph-title-text {
+  font-size: 16px;
+  font-weight: 700;
+  fill: var(--text);
+}
+
+.graph-subtitle-text {
+  font-size: 12px;
+  fill: var(--muted);
+}
+
+.graph-component-box {
+  fill: none;
+  stroke: #cbd5e1;
+  stroke-width: 1;
+  stroke-dasharray: 5 4;
+}
+
+.graph-edge {
+  fill: none;
+  stroke: #64748b;
+  stroke-width: 1.5;
+}
+
+.graph-node rect {
+  fill: #eff6ff;
+  stroke: var(--primary);
+  stroke-width: 1.5;
+}
+
+.graph-node-text {
+  font-size: 14px;
+  fill: #1e3a8a;
+  pointer-events: none;
+  font-weight: 600;
+}
