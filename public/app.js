@@ -68,6 +68,12 @@ let branchResult = null;
 let branchStale = false;
 let branchStaleReason = '';
 
+// 最近一次整谱关系图结果（服务端返回，含 version 与分层布局）
+// 结果保持展示；家谱发生写入后标记为过期并提示重新生成
+let chartResult = null;
+let chartStale = false;
+let chartStaleReason = '';
+
 const $ = (id) => document.getElementById(id);
 
 /** 安全创建 DOM 元素，避免 innerHTML 注入 */
@@ -137,6 +143,9 @@ async function refresh() {
   if (versionChanged && branchResult && !branchStale) {
     invalidateBranchResult('家谱已发生写入，以下支系视图基于旧版本，请重新生成');
   }
+  if (versionChanged && chartResult && !chartStale) {
+    invalidateChartResult('家谱已发生写入，以下关系图基于旧版本，请重新生成');
+  }
   render();
   loadUpcoming();
 }
@@ -160,6 +169,9 @@ function applyStateAndRender(data) {
   }
   if (versionChanged && branchResult && !branchStale) {
     invalidateBranchResult('家谱已发生写入，以下支系视图基于旧版本，请重新生成');
+  }
+  if (versionChanged && chartResult && !chartStale) {
+    invalidateChartResult('家谱已发生写入，以下关系图基于旧版本，请重新生成');
   }
   render();
   loadUpcoming();
@@ -449,8 +461,15 @@ function renderStaleBanner() {
     branchStale,
     `⚠️ ${branchStaleReason || '家谱在上次生成后发生过写入，以下结果可能已过期，请重新生成。'}`,
   );
+  renderOneStaleBanner(
+    $('chart-result'),
+    chartStale,
+    `⚠️ ${chartStaleReason || '家谱在上次生成后发生过写入，以下关系图可能已过期，请重新生成。'}`,
+  );
   // 结果过期或尚未生成时禁止下载，避免导出与展示不一致的旧数据
   $('branch-export').disabled = !(branchResult && !branchStale);
+  // 关系图过期、尚未生成或为空谱时禁止下载
+  $('chart-download').disabled = !(chartResult && !chartStale && !chartResult.empty);
 }
 
 function renderOneStaleBanner(box, stale, message) {
@@ -1608,6 +1627,295 @@ function renderBranchResult(data) {
     edgeBox.appendChild(list);
   }
   box.appendChild(edgeBox);
+}
+
+/* ---------------- 整谱关系图 ---------------- */
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+const CHART_FONT = '"PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif';
+const CHART_ZOOM_MIN = 0.15;
+const CHART_ZOOM_MAX = 5;
+
+let chartSvgSeq = 0; // 箭头标记 id 序号，避免多份 SVG 之间 id 冲突
+let chartSvgEl = null; // 当前展示的 SVG 元素
+let chartViewportEl = null; // 当前展示 SVG 的视口分组（缩放/平移变换挂载点）
+const chartView = { scale: 1, tx: 0, ty: 0 }; // 当前视图的缩放与平移
+
+function invalidateChartResult(reason) {
+  chartStale = true;
+  chartStaleReason = reason;
+  renderStaleBanner();
+}
+
+/** 安全创建 SVG 元素（命名空间），避免 innerHTML 注入 */
+function svgEl(tag, attrs = {}, children = []) {
+  const node = document.createElementNS(SVG_NS, tag);
+  for (const [key, value] of Object.entries(attrs)) {
+    if (key === 'text') node.textContent = value;
+    else if (value !== null && value !== undefined) node.setAttribute(key, value);
+  }
+  for (const child of [].concat(children)) {
+    if (child === null || child === undefined) continue;
+    node.appendChild(typeof child === 'string' ? document.createTextNode(child) : child);
+  }
+  return node;
+}
+
+/**
+ * 由服务端布局结果构建 SVG。interactive 为 true 时按容器展示（宽高由 CSS 控制）；
+ * 为 false 时生成自包含的静态 SVG（显式宽高、无视图变换、白底），供下载。
+ * 图上标注生成时的家谱版本（caption 由服务端随布局给出）。
+ */
+function buildChartSvg(data, interactive) {
+  const markerId = `chart-arrow-${++chartSvgSeq}`;
+  const attrs = {
+    xmlns: SVG_NS,
+    'font-family': CHART_FONT,
+    role: 'img',
+    'aria-label': `整谱关系图（家谱版本 ${data.version}）`,
+  };
+  if (interactive) {
+    attrs.class = 'chart-svg';
+  } else {
+    attrs.width = data.width;
+    attrs.height = data.height;
+  }
+  const svg = svgEl('svg', attrs);
+
+  // 箭头标记：父母 → 子女方向（指向下方的子女节点）
+  const defs = svgEl('defs');
+  const marker = svgEl('marker', {
+    id: markerId,
+    viewBox: '0 0 10 10',
+    refX: '9',
+    refY: '5',
+    markerWidth: '7',
+    markerHeight: '7',
+    orient: 'auto',
+  });
+  marker.appendChild(svgEl('path', { d: 'M 0 1 L 9 5 L 0 9 z', fill: '#94a3b8' }));
+  defs.appendChild(marker);
+  svg.appendChild(defs);
+
+  const viewport = svgEl('g');
+  // 画布背景（下载的 SVG 自带白底）
+  viewport.appendChild(svgEl('rect', { x: 0, y: 0, width: data.width, height: data.height, fill: '#ffffff' }));
+
+  // 连通分量背景带：多于一个分量时标出分组与分量之间的留白
+  if (data.componentCount > 1) {
+    for (const comp of data.components) {
+      viewport.appendChild(svgEl('rect', {
+        x: comp.x,
+        y: comp.y,
+        width: comp.width,
+        height: comp.height,
+        rx: 10,
+        fill: '#f8fafc',
+        stroke: '#e2e8f0',
+      }));
+    }
+  }
+
+  // 关系连线：父母节点底边中点 → 子女节点顶边中点（三次贝塞尔，箭头指向子女）；
+  // 多位父母指向同一子女时各条连线全部保留
+  const nodeById = new Map(data.nodes.map((n) => [n.id, n]));
+  for (const e of data.edges) {
+    const p = nodeById.get(e.parentId);
+    const c = nodeById.get(e.childId);
+    if (!p || !c) continue;
+    const x1 = p.x;
+    const y1 = p.y + p.h / 2;
+    const x2 = c.x;
+    const y2 = c.y - c.h / 2;
+    const midY = (y1 + y2) / 2;
+    viewport.appendChild(svgEl('path', {
+      d: `M ${x1} ${y1} C ${x1} ${midY}, ${x2} ${midY}, ${x2} ${y2}`,
+      fill: 'none',
+      stroke: '#94a3b8',
+      'stroke-width': '1.5',
+      'marker-end': `url(#${markerId})`,
+    }));
+  }
+
+  // 成员节点：同一成员只绘一个节点，姓名居中
+  for (const n of data.nodes) {
+    const g = svgEl('g');
+    g.appendChild(svgEl('rect', {
+      x: n.x - n.w / 2,
+      y: n.y - n.h / 2,
+      width: n.w,
+      height: n.h,
+      rx: 8,
+      fill: '#ffffff',
+      stroke: '#2563eb',
+      'stroke-width': '1.5',
+    }));
+    g.appendChild(svgEl('text', {
+      x: n.x,
+      y: n.y,
+      'text-anchor': 'middle',
+      'dominant-baseline': 'central',
+      'font-size': '13',
+      fill: '#1f2933',
+    }, n.name));
+    g.appendChild(svgEl('title', {}, `${n.name}（第 ${n.layer} 层 · 分量 ${n.component + 1}）`));
+    viewport.appendChild(g);
+  }
+
+  // 图上标注：生成时的家谱版本（文本由服务端给出，下载的 SVG 同样携带）
+  viewport.appendChild(svgEl('text', {
+    x: data.caption.x,
+    y: data.caption.y,
+    'font-size': '13',
+    fill: '#6b7280',
+  }, data.caption.text));
+
+  svg.appendChild(viewport);
+  return { svg, viewport };
+}
+
+function applyChartView() {
+  if (chartViewportEl) {
+    chartViewportEl.setAttribute(
+      'transform',
+      `translate(${chartView.tx} ${chartView.ty}) scale(${chartView.scale})`,
+    );
+  }
+}
+
+/** 重置视图：整张图适应容器（放大不超过 100%），水平垂直居中 */
+function resetChartView() {
+  if (!chartSvgEl || !chartResult || chartResult.empty) return;
+  const boxW = chartSvgEl.clientWidth || 800;
+  const boxH = chartSvgEl.clientHeight || 520;
+  const fit = Math.min(boxW / chartResult.width, boxH / chartResult.height, 1);
+  chartView.scale = fit * 0.98;
+  chartView.tx = (boxW - chartResult.width * chartView.scale) / 2;
+  chartView.ty = (boxH - chartResult.height * chartView.scale) / 2;
+  applyChartView();
+}
+
+/** 以容器内某点为锚点缩放（锚点处的图内容保持不动）；无锚点时以中心缩放 */
+function zoomChart(factor, clientX, clientY) {
+  if (!chartSvgEl || !chartResult || chartResult.empty) return;
+  const rect = chartSvgEl.getBoundingClientRect();
+  const mx = clientX === undefined ? rect.width / 2 : clientX - rect.left;
+  const my = clientY === undefined ? rect.height / 2 : clientY - rect.top;
+  const next = Math.min(CHART_ZOOM_MAX, Math.max(CHART_ZOOM_MIN, chartView.scale * factor));
+  const k = next / chartView.scale;
+  chartView.tx = mx - (mx - chartView.tx) * k;
+  chartView.ty = my - (my - chartView.ty) * k;
+  chartView.scale = next;
+  applyChartView();
+}
+
+/** 为展示用 SVG 挂上交互：滚轮缩放（以光标为锚点）、拖动平移 */
+function attachChartInteractions(svg) {
+  svg.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    zoomChart(e.deltaY < 0 ? 1.2 : 1 / 1.2, e.clientX, e.clientY);
+  }, { passive: false });
+
+  let pan = null;
+  svg.addEventListener('pointerdown', (e) => {
+    pan = { x: e.clientX, y: e.clientY, tx: chartView.tx, ty: chartView.ty };
+    svg.setPointerCapture(e.pointerId);
+    svg.classList.add('panning');
+  });
+  svg.addEventListener('pointermove', (e) => {
+    if (!pan) return;
+    chartView.tx = pan.tx + (e.clientX - pan.x);
+    chartView.ty = pan.ty + (e.clientY - pan.y);
+    applyChartView();
+  });
+  const endPan = () => {
+    pan = null;
+    svg.classList.remove('panning');
+  };
+  svg.addEventListener('pointerup', endPan);
+  svg.addEventListener('pointercancel', endPan);
+}
+
+/** 生成整谱关系图：只读查询，服务端按当前最新家谱状态计算布局 */
+$('chart-generate').addEventListener('click', async () => {
+  try {
+    const data = await api('/api/family-chart');
+    chartResult = data;
+    chartStale = false;
+    chartStaleReason = '';
+    renderChartResult(data);
+    renderStaleBanner();
+  } catch (err) {
+    toast(err.message, true);
+  }
+});
+
+/** 下载当前图：重新构建一份自包含 SVG（显式宽高、无视图变换），带版本标注 */
+$('chart-download').addEventListener('click', () => {
+  if (!chartResult || chartStale || chartResult.empty) {
+    toast('请先生成最新的整谱关系图', true);
+    return;
+  }
+  const { svg } = buildChartSvg(chartResult, false);
+  const text = `<?xml version="1.0" encoding="UTF-8"?>\n${new XMLSerializer().serializeToString(svg)}\n`;
+  const blob = new Blob([text], { type: 'image/svg+xml;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const date = new Date().toISOString().slice(0, 10);
+  const a = el('a', {
+    href: url,
+    download: `family-chart-v${chartResult.version}-${date}.svg`,
+  });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+  toast(`已下载整谱关系图 SVG（家谱版本 ${chartResult.version}）`);
+});
+
+$('chart-zoom-in').addEventListener('click', () => zoomChart(1.25));
+$('chart-zoom-out').addEventListener('click', () => zoomChart(1 / 1.25));
+$('chart-zoom-reset').addEventListener('click', resetChartView);
+
+function renderChartResult(data) {
+  const box = $('chart-result');
+  box.replaceChildren();
+  box.dataset.hasResult = '1';
+  chartSvgEl = null;
+  chartViewportEl = null;
+
+  // 空谱：展示空状态，不绘图
+  if (data.empty) {
+    box.appendChild(el('div', { class: 'summary no-match' }, [
+      el('strong', { text: '空谱：当前家谱没有任何成员，无法绘制关系图。' }),
+      el('div', {
+        text: '请先在「① 成员」中录入成员（可在「② 父母 → 子女关系」中建立关系），再重新生成整谱关系图。',
+      }),
+    ]));
+    return;
+  }
+
+  const summary = el('div', { class: 'summary' });
+  summary.appendChild(el('div', {}, [
+    document.createTextNode('整谱关系图（只读）：共 '),
+    el('strong', { text: `${data.memberCount} 名成员` }),
+    document.createTextNode('、'),
+    el('strong', { text: `${data.edgeCount} 条关系` }),
+    document.createTextNode('，按忽略方向划分为 '),
+    el('strong', { text: `${data.componentCount} 个连通分量` }),
+    document.createTextNode(`；图上标注生成时的家谱版本 ${data.version}。`),
+  ]));
+  summary.appendChild(el('div', {
+    class: 'empty-hint',
+    text: '拖动平移、滚轮或按钮缩放；「下载当前图（SVG）」导出带版本标注的矢量图。家谱写入后此处会提示重新生成。',
+  }));
+  box.appendChild(summary);
+
+  const { svg, viewport } = buildChartSvg(data, true);
+  attachChartInteractions(svg);
+  box.appendChild(svg);
+  chartSvgEl = svg;
+  chartViewportEl = viewport;
+  resetChartView();
 }
 
 /* ---------------- 备份与恢复 ---------------- */

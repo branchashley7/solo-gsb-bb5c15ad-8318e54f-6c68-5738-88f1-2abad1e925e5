@@ -20,7 +20,9 @@
       「备份与恢复」可下载仅含成员 ID、姓名、纪念日与关系的 JSON 备份，选择备份文件预览校验后整体恢复（可撤销）；
       「成员纪念日」可为每名成员登记一个生日与一个忌日（公历月日），并查看包含今天在内的未来 30 天纪念日清单；
       「后代支系视图」可选择始祖与 1～10 代上限提取后代：同一后代只显示一次、按最短代数分组并标记所属分支，
-      仅展示支系内亲子关系，结果可下载为局部导出的 JSON。
+      仅展示支系内亲子关系，结果可下载为局部导出的 JSON；
+      「整谱关系图」把全部成员与父母→子女关系绘成可缩放的分层 SVG（按连通分量分组、最长父母链分层，
+      图上标注生成时的家谱版本），可下载，整个模块只读。
     </p>
   </header>
 
@@ -276,6 +278,28 @@
       </p>
       <div id="branch-result" class="result" aria-live="polite">
         <p class="placeholder">选择始祖与代数上限后点击「生成支系视图」。</p>
+      </div>
+    </section>
+
+    <!-- 整谱关系图 -->
+    <section class="card wide" aria-labelledby="chart-title">
+      <h2 id="chart-title">⑨ 整谱关系图</h2>
+      <div class="chart-toolbar">
+        <button type="button" id="chart-generate" class="primary">生成整谱关系图</button>
+        <button type="button" id="chart-download" disabled>下载当前图（SVG）</button>
+        <span class="chart-zoom" role="group" aria-label="缩放控制">
+          <button type="button" id="chart-zoom-out" title="缩小">−</button>
+          <button type="button" id="chart-zoom-reset" title="适应窗口">适应窗口</button>
+          <button type="button" id="chart-zoom-in" title="放大">＋</button>
+        </span>
+      </div>
+      <p class="empty-hint">
+        把当前全部成员与「父母 → 子女」关系绘成一张可缩放的分层图：先按忽略方向的关系划分连通分量
+        （分量之间留白），各分量按最长父母链分层；多位父母指向同一子女时只绘一个成员节点并保留各条连线。
+        图上标注生成时的家谱版本；整个模块只读，家谱写入后请重新生成。可拖动平移、滚轮或按钮缩放。
+      </p>
+      <div id="chart-result" class="result chart-result" aria-live="polite">
+        <p class="placeholder">点击「生成整谱关系图」查看当前家谱的整体结构。</p>
       </div>
     </section>
   </main>

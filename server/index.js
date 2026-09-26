@@ -12,6 +12,7 @@ const {
   descendantBranches,
   MAX_DESCENDANT_GENERATIONS,
 } = require('./familyGraph');
+const { layoutFamilyChart } = require('./familyChart');
 const { parseLocalDate, upcomingAnniversaries } = require('./anniversaries');
 
 const PORT = parseInt(process.env.PORT, 10) || 3000;
@@ -592,6 +593,31 @@ app.get('/api/descendant-branches', (req, res) => {
       branches: m.branches.map((id) => ({ id, name: nameOf(id) })),
     })),
     edges: result.edges.map((e) => ({
+      parentId: e.parentId,
+      parentName: nameOf(e.parentId),
+      childId: e.childId,
+      childName: nameOf(e.childId),
+    })),
+  });
+});
+
+/**
+ * 整谱关系图布局（只读，不写入任何数据、不推进版本）：
+ * 把当前全部成员与父母→子女关系排布成分层平面图，供前端绘制可缩放的 SVG 并下载。
+ * 先按忽略方向的关系划分连通分量（分量之间留白），各分量按最长父母链分层；
+ * 层内按直接父母节点横坐标的重心排序（平局按姓名、ID），没有父母的层按姓名、ID；
+ * 多位父母指向同一子女时只布局一个成员节点并保留各条连线；节点与姓名互不重叠。
+ * 空谱返回 empty: true。响应携带当前家谱版本 version 与图上的版本标注 caption，
+ * 页面据此在图上标注生成时的版本，并在家谱写入后提示重新生成。
+ */
+app.get('/api/family-chart', (req, res) => {
+  const layout = layoutFamilyChart(store.getState(), store.getVersion());
+  const byId = new Map(store.list().members.map((m) => [m.id, m.name]));
+  const nameOf = (id) => byId.get(id) || '（已删除）';
+  res.json({
+    version: store.getVersion(),
+    ...layout,
+    edges: layout.edges.map((e) => ({
       parentId: e.parentId,
       parentName: nameOf(e.parentId),
       childId: e.childId,
